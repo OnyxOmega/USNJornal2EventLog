@@ -10,48 +10,57 @@ Maps:
     Values:
       -
         Name: targetfilename
-        Value: "/Event/EventData/Data[4]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=TargetFilename: ).+"
   -
     Property: PayloadData2
     PropertyValue: "%category%"
     Values:
       -
         Name: category
-        Value: "/Event/EventData/Data[3]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=Category: ).+"
   -
     Property: PayloadData3
     PropertyValue: "%utctime%"
     Values:
       -
         Name: utctime
-        Value: "/Event/EventData/Data[5]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=UtcTime: ).+"
   -
     Property: PayloadData4
     PropertyValue: "%reason%"
     Values:
       -
         Name: reason
-        Value: "/Event/EventData/Data[6]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=Reason: ).+"
   -
     Property: PayloadData5
     PropertyValue: "Usn: %usn% | JournalId: %journalid%"
     Values:
       -
         Name: usn
-        Value: "/Event/EventData/Data[7]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=Usn: )[0-9]+"
       -
         Name: journalid
-        Value: "/Event/EventData/Data[8]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=JournalId: )[0-9]+"
   -
     Property: PayloadData6
     PropertyValue: "IP: %sourceip% | VolSerial: %volserial% | Schema: %schema%"
     Values:
       -
         Name: sourceip
-        Value: "/Event/EventData/Data[14]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=SourceIP: ).+"
       -
         Name: volserial
-        Value: "/Event/EventData/Data[16]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=VolumeSerial: ).+"
       -
         Name: schema
-        Value: "/Event/EventData/Data[2]"
+        Value: "/Event/EventData/Data"
+        Refine: "(?<=SchemaVersion: ).+"
