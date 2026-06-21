@@ -1,15 +1,15 @@
 Author: YASDC, Inc.
-Description: "USN: Other Change"
-EventId: 105
+Description: "USN: Device Removed"
+EventId: 501
 Channel: "FileSystem"
 Provider: "USNJournalMonitor"
 Maps:
   -
     Property: PayloadData1
-    PropertyValue: "%targetfilename%"
+    PropertyValue: "%drive%"
     Values:
       -
-        Name: targetfilename
+        Name: drive
         Value: "/Event/EventData/Data[2]"
   -
     Property: PayloadData2
@@ -27,37 +27,25 @@ Maps:
         Value: "/Event/EventData/Data[4]"
   -
     Property: PayloadData4
-    PropertyValue: "HW: %hwserial% | VSN: %vsn%"
+    PropertyValue: "HWID: %hwserial%"
     Values:
       -
         Name: hwserial
         Value: "/Event/EventData/Data[5]"
+  -
+    Property: PayloadData5
+    PropertyValue: "VSN: %vsn%"
+    Values:
       -
         Name: vsn
         Value: "/Event/EventData/Data[6]"
   -
-    Property: PayloadData5
-    PropertyValue: "VolSerial: %volserial% | Host: %hostname%"
-    Values:
-      -
-        Name: volserial
-        Value: "/Event/EventData/Data[7]"
-      -
-        Name: hostname
-        Value: "/Event/EventData/Data[8]"
-  -
     Property: PayloadData6
-    PropertyValue: "%category% | Reason: %reason% | Usn: %usn% | Jrnl: %journalid%"
+    PropertyValue: "%category% | Host: %hostname%"
     Values:
       -
         Name: category
         Value: "/Event/EventData/Data[11]"
       -
-        Name: reason
-        Value: "/Event/EventData/Data[12]"
-      -
-        Name: usn
-        Value: "/Event/EventData/Data[13]"
-      -
-        Name: journalid
-        Value: "/Event/EventData/Data[14]"
+        Name: hostname
+        Value: "/Event/EventData/Data[8]"

@@ -1,0 +1,13 @@
+Author: YASDC, Inc.
+Description: "USN Operational: Engine Started"
+EventId: 914
+Channel: "FileSystem"
+Provider: "USNJournalMonitor"
+Maps:
+  -
+    Property: PayloadData1
+    PropertyValue: "%message%"
+    Values:
+      -
+        Name: message
+        Value: "/Event/EventData/Data[1]"

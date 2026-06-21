@@ -10,57 +10,54 @@ Maps:
     Values:
       -
         Name: targetfilename
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=TargetFilename: ).+"
+        Value: "/Event/EventData/Data[2]"
   -
     Property: PayloadData2
-    PropertyValue: "%category%"
-    Values:
-      -
-        Name: category
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=Category: ).+"
-  -
-    Property: PayloadData3
     PropertyValue: "%utctime%"
     Values:
       -
         Name: utctime
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=UtcTime: ).+"
+        Value: "/Event/EventData/Data[3]"
+  -
+    Property: PayloadData3
+    PropertyValue: "%machineguid%"
+    Values:
+      -
+        Name: machineguid
+        Value: "/Event/EventData/Data[4]"
   -
     Property: PayloadData4
-    PropertyValue: "%reason%"
+    PropertyValue: "HW: %hwserial% | VSN: %vsn%"
     Values:
       -
-        Name: reason
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=Reason: ).+"
+        Name: hwserial
+        Value: "/Event/EventData/Data[5]"
+      -
+        Name: vsn
+        Value: "/Event/EventData/Data[6]"
   -
     Property: PayloadData5
-    PropertyValue: "Usn: %usn% | JournalId: %journalid%"
+    PropertyValue: "VolSerial: %volserial% | Host: %hostname%"
     Values:
-      -
-        Name: usn
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=Usn: )[0-9]+"
-      -
-        Name: journalid
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=JournalId: )[0-9]+"
-  -
-    Property: PayloadData6
-    PropertyValue: "IP: %sourceip% | VolSerial: %volserial% | Schema: %schema%"
-    Values:
-      -
-        Name: sourceip
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=SourceIP: ).+"
       -
         Name: volserial
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=VolumeSerial: ).+"
+        Value: "/Event/EventData/Data[7]"
       -
-        Name: schema
-        Value: "/Event/EventData/Data"
-        Refine: "(?<=SchemaVersion: ).+"
+        Name: hostname
+        Value: "/Event/EventData/Data[8]"
+  -
+    Property: PayloadData6
+    PropertyValue: "%category% | Reason: %reason% | Usn: %usn% | Jrnl: %journalid%"
+    Values:
+      -
+        Name: category
+        Value: "/Event/EventData/Data[11]"
+      -
+        Name: reason
+        Value: "/Event/EventData/Data[12]"
+      -
+        Name: usn
+        Value: "/Event/EventData/Data[13]"
+      -
+        Name: journalid
+        Value: "/Event/EventData/Data[14]"
