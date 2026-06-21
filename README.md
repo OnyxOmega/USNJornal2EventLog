@@ -192,12 +192,40 @@ column-mapping details and the three event "shapes" are in
 - **[maps/README_maps.md](maps/README_maps.md)** — EvtxECmd / Timeline Explorer / ELE /
   Velociraptor integration.
 
+## Companion analysis tools
+
+usnmon ships alongside two companion tools that analyze the archives it produces.
+Both are self-contained Python scripts that only require `python-evtx` or the
+Rust `evtx` reader:
+
+- **`usn_stats.py` v0.2.0** — census/profiler. Single-file mode produces a full
+  per-archive report (run/throughput, event-ID frequency, top directories with
+  recursive >40%-of-parent breakdown, extensions, temporal, resolution health,
+  operational/device summary). **Series mode** (point it at a directory of
+  archives) adds: consolidated summary, self-integrity check (coverage
+  continuity / engine restarts / archive-close events / anomaly events),
+  session inference (WSL/Chrome/Edge/Firefox/RDP/PSReadLine patterns), rotation
+  capacity projection (fill time at observed rate vs. 1/3.5/5 GB targets), and
+  per-archive comparison table.
+
+- **`usn_drill.py` v0.0.1** — targeted drill-down. Takes an archive + a filter
+  file of directory substrings (one per line, strict `\` terminator validation),
+  produces a focused report scoped to the filter: throughput, event-ID mix,
+  top directories (full depth), file extensions with event-type mix (C/M/D/R/S/O
+  %), filename pattern analysis (GUID/timestamp/hash/sequential detection),
+  file lifetime analysis (Create+Delete pairs, transient detection,
+  fastest-cycling files), resilient-files detection (state-journaling
+  fingerprint), temporal/burst detection, per-instance inference
+  (cam/camera/stream/channel/instance N regex), resolution health.
+
 ## Status
 
-v0.0.7 — builds on the locked v0.0.6 core (capture / rotation / hashing /
-device-tracking, demonstrated on real hardware) with: calendar-month rotation and
-month-bucketed naming, optional legal-retention pruning, configurable service start
-type, an interactive `config` editor, and a reordered resume path. EID 106 (V4
-range-change) is **reserved** (not emitted). Planned for later versions: external
-(customer-owned) archive signing for cryptographic authenticity, and a companion
-analysis tool for automated up-front archive-set verification.
+v0.0.8a — current shipping engine. Builds on v0.0.7's calendar-month rotation,
+legal-retention, and configurable start-type with: unified time-period parser
+(`s`/`m`/`h`/`d`/`w`/`t`/`M`/`y`), `rotation_anchor` state machine driving the
+ramp-in → clean-cycle rotation rule, 4-case restart detection (clean / clock
+anomaly → 926 / size-cap mid-window / cross-boundary gap → 925), and a
+dead-code/consolidation cleanup pass (-72 net lines across the a/b/c series).
+EID 106 (V4 range-change) is **reserved** (not emitted). Companion analyzer
+tools `usn_stats.py` v0.2.0 and `usn_drill.py` v0.0.1 ship in the same release.
+Planned for v0.0.8b: service-stop hang fix + `status` subcommand.
