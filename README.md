@@ -1,290 +1,203 @@
-# Forensic NTFS USN Journal Monitor
+# usnmon — USN Journal Monitor
 
-A Windows-native background service that monitors the **NTFS USN Change Journal**
-in real time, filters filesystem activity against a user-defined whitelist, and
-records forensic metadata to a dedicated Windows Event Log (`FileSystem`). It is
-designed for endpoint auditing, change tracking, and lightweight host forensics.
+**Continuous NTFS USN-journal recorder for Windows forensic monitoring.**
+Maintained by YASDC, Inc. · License: [PolyForm Noncommercial 1.0.0](LICENSE)
 
-The service is headless, survives reboots, runs under `LocalSystem`, and
-self-manages its own rolling log archives so it can run unattended for long
-periods without filling the disk.
-
---- 
-
-## Full Features List
-See full **[FEATURES LIST](FEATURES.md)**
+> **Supersedes [`usn_monitor.py`](old_srcs/).** The original directory-targeted
+> monitor is deprecated and preserved under [`old_srcs/`](old_srcs/) for reference.
+> usnmon is a ground-up rewrite with a fundamentally different design (see below).
 
 ---
 
-## How it works
+## What it does
 
-```
-USN Journal  ->  read record  ->  resolve parent directory by file-reference
-             ->  O(1) whitelist match  ->  classify by reason  ->  Windows Event
-```
+usnmon continuously records file-system activity on every local NTFS volume by reading
+the **USN change journal**, writes those records to a dedicated Windows event channel
+(`FileSystem`), and periodically rotates that channel into timestamped, hashed
+archives. It also tracks **removable-device identity** — including drives it cannot
+journal — so USB attach/detach/reformat is recorded even when the files on those drives
+are not.
 
-1. Opens the volume and queries (or creates) the USN journal.
-2. Negotiates the richest read format the volume supports (V2 on NTFS, V3 on ReFS).
-3. For each change, resolves the containing directory's path (cached) and checks
-   it against the whitelist in constant time.
-4. Classifies the change by its USN reason flags and writes a structured event
-   with a category-specific Event ID.
+It is a **witness**: it records what happened and lets you verify the record matches
+what was captured. It is **not** a tamper-prevention tool — read [`SECURITY.md`](SECURITY.md)
+for exactly what it does and does not guarantee before relying on it.
 
----
+## Design: capture everything
 
-## Requirements
+The original `usn_monitor` was laser-focused — you configured specific directories to
+watch. usnmon inverts that: it **captures 100% of journaled activity on all volumes**
+and logs everything to a single channel, leaving filtering and analysis to downstream
+tools. The only writes it deliberately suppresses are its **own** (the live event log
+and its config file) to avoid a feedback loop — everything else, including its own
+archives and state files, is captured, because tampering with those is forensic signal.
 
-- Windows (NTFS volume; ReFS supported via V3 records)
-- Python 3.12+ (64-bit)
-- [`pywin32`](https://pypi.org/project/pywin32/): `pip install pywin32`
-- Administrator / `LocalSystem` privileges (USN reads and `Clear-EventLog`
-  require elevation)
-- .NET Framework 4.x present (its `EventLogMessages.dll` is used so events render
-  a readable description; this ships with virtually all modern Windows installs)
+## Features (v0.0.7)
 
----
+- **Continuous multi-volume capture** from the USN journal. On first run for a volume
+  it reads the retained journal once (history capture), then advances live; on restart
+  it resumes from the saved cursor — never re-reading from the start every poll.
+- **Parent-reference path resolution** — deleted files still resolve to a real path,
+  with a stable, high-hit-rate cache.
+- **Gap-free resume** — a persisted per-drive cursor (JournalId + last USN) survives
+  restarts; unavoidable gaps (records purged from the ring, or a recreated journal) are
+  recorded (event 923), never silently skipped.
+- **Full volume disposition** — every drive is monitored or recorded as un-monitorable
+  with a reason (no active journal / unsupported filesystem / remote share — events
+  919/920/921). Nothing is dropped silently.
+- **Removable-device identity** — attach/detach/re-attach/reformat tracking
+  (events 500/501/503/504) with hardware serial + USB registry artifacts, **including
+  for non-journalable drives** (exFAT/UDF). Detach is detected by volume enumeration
+  without re-probing the journal.
+- **Rotation** on the calendar-month boundary **or** a 3.5 GB size cap (whichever
+  first), with span-named archives (v0.0.7c+); `--log-interval` overrides the time-leg
+  with any other cadence: export -> 4-hash the evidence -> write manifest -> bundle
+  evidence + manifest into one zip -> events 904 (success) / 922 (failure).
+- **Legal retention** — optional `--legal-retention` prunes whole aged-out archive
+  bundles (default: keep everything); never alters a sealed archive.
+- **Integrity manifests** — MD5/SHA-1/SHA-256/SHA-512 over the evidence file (not the
+  zip container), bound inside the archive bundle so proof travels with evidence.
+- **Dual-tool field contract** — the same events parse cleanly in EvtxECmd / Timeline
+  Explorer (via the included [maps](maps/)) and Event Log Explorer, and read natively
+  in Velociraptor.
 
 ## Quick start
 
-```bat
-:: 1. Install dependencies
-pip install pywin32
-
-:: 2. Configure which directories to monitor (launches the GUI)
-python usn_monitor.py
-
-:: 3. Test in the foreground (Ctrl+C to stop)
-python usn_monitor.py debug
-
-:: 4. Install and start as a Windows service
-python usn_monitor.py --startup delayed install
-python usn_monitor.py start
-```
-
----
-
-## Event ID reference
-
-Each change is classified by its **dominant** USN reason flag (reasons accumulate
-into a single close-record, so the most significant one wins). The full reason
-string is always preserved in the event body.
-
-| Event ID | Category       | Triggered by                                                        |
-|:--------:|----------------|---------------------------------------------------------------------|
-| **100**  | Create         | `FileCreate`                                                        |
-| **101**  | Modify         | `DataOverwrite`, `DataExtend`, `DataTruncation`, `NamedDataOverwrite`, `StreamChange` |
-| **102**  | Delete         | `FileDelete`                                                        |
-| **103**  | Rename         | `RenameOld`, `RenameNew`                                            |
-| **104**  | SecurityChange | ACL / ownership change (`SecurityChange`)                          |
-| **105**  | Other          | `IndexableChange`, `BasicInfoChange`, `HardLinkChange`            |
-| **106**  | RangeChange    | `USN_RECORD_V4` range-tracking (ReFS only)                         |
-
-**Classification priority:** `Delete > Create > Rename > Security > Modify > Other`.
-A file created and deleted before its close-record is reported as **Delete** (the
-net on-disk effect).
-
-### Querying events
-
-Events are written to the **`FileSystem`** custom log, found in Event Viewer under
-**Applications and Services Logs → FileSystem**.
-
-```powershell
-# All deletions
-Get-WinEvent -FilterHashtable @{LogName='FileSystem'; Id=102}
-
-# Creates and deletes together
-Get-WinEvent -FilterHashtable @{LogName='FileSystem'; Id=100,102}
-
-# Everything in the last hour, newest first
-Get-WinEvent -FilterHashtable @{LogName='FileSystem'; StartTime=(Get-Date).AddHours(-1)}
-```
-
-> Note: USN close-records accumulate every reason since the file was opened, so a
-> routine "save" usually arrives as one Create/Modify event rather than one per
-> write. This is the intended forensic granularity.
-
----
-## EventData fields (`{PARAM[n]}` reference)
-
-Each event carries a full human-readable field block as `{PARAM[1]}`, plus six
-high-value fields as separate insertion strings for column extraction in **Event
-Log Explorer** (or any tool using positional `EventData`). Extract a field as a
-custom column with `{PARAM[n]}`, using the index below.
-
-> `{PARAM[1]}` is the complete `Key: value` block (all 16 fields), so the
-> description tab stays fully readable. The six broken-out fields begin at
-> `{PARAM[2]}`. These indices are part of the event field contract
-> (`SchemaVersion`) — a **MAJOR** schema bump is required if they ever change.
-
-| Index | Field | Notes |
-|-------|-------|-------|
-| `{PARAM[1]}` | Full block | All 16 fields as `Key: value` lines (readable description + EvtxECmd regex source) |
-| `{PARAM[2]}` | Hostname | Source host name |
-| `{PARAM[3]}` | TargetFilename | Full path (mirrors Sysmon — correlation key) |
-| `{PARAM[4]}` | UtcTime | `YYYY-MM-DD HH:MM:SS.fff` (mirrors Sysmon — correlation key) |
-| `{PARAM[5]}` | MachineGuid | Stable machine identifier |
-| `{PARAM[6]}` | SourceIP | IP address(es) at service start |
-| `{PARAM[7]}` | VolumeSerial | NTFS volume serial (`XXXX-XXXX`) |
-
-**The remaining fields** (SchemaVersion, Category, Reason, Usn, JournalId, FQDN,
-Domain, MachineSID, MAC, OSBuild) are **not** broken out as separate `{PARAM[n]}`
-strings — they live inside the `{PARAM[1]}` block. Extract them there (Event Log
-Explorer supports regex against the description), or use the EvtxECmd maps, which
-pull every field from the block by regex into Timeline Explorer columns.
-
-**Two tools, two access methods (by design):**
-- **Event Log Explorer** reads the raw insertion-strings array → use `{PARAM[n]}`
-  above for the six broken-out fields.
-- **EvtxECmd → Timeline Explorer** renders to a single `Data` blob → the bundled
-  maps (`maps/`) regex-extract all fields into `PayloadData1–6` + `Computer`.
-
-**Note:** these `EventData` elements are *positional and unnamed* (a limitation of
-classic event reporting), so `{EventData\Usn}`-style **named** lookups do **not**
-work. Named-field access requires the instrumentation-manifest build (planned),
-which would also let every field become its own named column.
-
----
-## Selecting paths to monitor
-
-Run `python usn_monitor.py` with no arguments to open the configuration GUI:
-
-- The tree lazily loads directories (no hang on large drives).
-- **Double-click a folder** to recursively add (or remove) it *and all of its
-  sub-directories* to the whitelist. Recursive walks run off the UI thread, so
-  the GUI never freezes.
-- **`[X]`** = monitored, **`[ ]`** = not monitored.
-- Use the search box to jump to a folder by name.
-- Click **Save Config (JSON)** to write `monitor_config.json`.
-
-By default, `C:\Windows` and all sub-directories are monitored; everything else is
-excluded.
-
-### `monitor_config.json` format
-
-The config file lives next to `usn_monitor.py`. The service reads it **once at
-startup** — restart the service after any change.
-
-```json
-{
-    "paths": [
-        "C:\\Windows",
-        "C:\\Windows\\System32",
-        "C:\\Windows\\Temp"
-    ],
-    "rotation_size_gb": 3.5,
-    "max_storage_gb": 60.0
-}
-```
-
-| Key                | Meaning                                                            |
-|--------------------|-------------------------------------------------------------------|
-| `paths`            | Monitored directories (recursive selections include every subdir) |
-| `rotation_size_gb` | Rotate the live log when it reaches this size (GB)                 |
-| `max_storage_gb`   | Total archive directory cap; oldest archives deleted FIFO (GB)    |
-
-> Changing the JSON does **not** affect a running service. Apply with:
-> `python usn_monitor.py restart`
-
----
-
-## Log rotation & retention
-
-- **Live log:** `FileSystem.evtx` (the custom `FileSystem` Windows Event Log).
-- **Rotation triggers (whichever comes first):**
-  - The live log reaches `rotation_size_gb` (default **3.5 GB**), or
-  - The calendar reaches the **1st of the month at 01:00**.
-- **Archive naming:** `FileSystem_<Month>_<Year>_<counter>.evtx`
-  (e.g. `FileSystem_June_2026_1.evtx`); the counter resets each month.
-- **Archive location:** `C:\FileSystem_Archives`
-- **Storage cap:** when the archive directory exceeds `max_storage_gb`
-  (default **60 GB**), the **oldest** `.evtx` files are deleted first (FIFO) until
-  the directory is back under the cap.
-
-Rotation is performed with `Clear-EventLog -Backup`, which atomically archives and
-clears the live log.
-
----
-
-## Service management
-
-```bat
-python usn_monitor.py --startup delayed install   :: install (delayed auto-start)
-python usn_monitor.py start                        :: start
-python usn_monitor.py stop                         :: stop
-python usn_monitor.py restart                      :: stop + start (reloads config)
-python usn_monitor.py update                        :: re-register after editing the .py
-python usn_monitor.py remove                        :: uninstall
-sc query USNMonitorService                          :: check status
-```
-
-- Use `--startup auto` instead of `delayed` to start as early as possible at boot.
-- Run **`update`** (not reinstall) after editing the source; the SCM caches the
-  script path.
-
----
-
-## Diagnostics
-
-The service writes its own operational log (errors, startup info, rotation
-activity) to:
+Deploy `usnmon.py` and `usn_common.py` together. Run modes:
 
 ```
-C:\FileSystem_Archives\usn_monitor.log
+python usnmon.py install                       # install as a Windows service
+python usnmon.py --startup delayed install     # install with a start mode (pywin32 native)
+python usnmon.py start                         # start the installed service
+python usnmon.py debug                         # foreground, verbose console
+python usnmon.py debug --log-interval 2m       # ...rotating every 2 minutes (testing)
+python usnmon.py config                        # interactive settings editor (see below)
+python usnmon.py archive-now                   # force one rotation
+python usnmon.py check                         # report any missing month-bucket archives
+python usnmon.py                               # no args: run as service (SCM dispatch)
 ```
 
-For deep troubleshooting, enable a periodic counter summary (records seen /
-resolve failures / whitelist matches / events emitted) by setting the
-`USN_VERBOSE` environment variable to `1`, `true`, `yes`, or `on`.
+**Rotation.** By default the live log rotates into an archive on the **calendar-month
+boundary** (1st at 00:00:00, closing out the previous month) **OR** when it reaches
+the **3.5 GB** size cap, whichever comes first. Archive naming as of v0.0.7c/v0.0.8:
+a full untouched calendar month is named `FileSystem_<MonthName>_<YYYY>.zip` (e.g.
+`FileSystem_June_2026.zip`); everything else uses an ISO-style span name like
+`FileSystem_2026-06-17_to_2026-07-16.zip` (whole-day boundaries) or
+`FileSystem_2026-06-17-100000_to_2026-06-18-100000.zip` (sub-day boundaries). The
+filename **is** the rotation window — so the moment a `1M` archive uses a span name,
+the investigator sees at a glance that the size cap fired that month.
 
-```bat
-:: Console (inherits your shell environment)
-set USN_VERBOSE=1
-python usn_monitor.py debug
+`--log-interval <N><unit>` overrides the monthly time-leg. The 3.5 GB size cap still
+applies. Unit table (v0.0.8 — case-significant on `m` vs `M`):
 
-:: Service (must be machine-wide, then restart so the SCM picks it up)
-setx USN_VERBOSE 1 /m
-python usn_monitor.py restart
-```
+| Unit | Meaning |
+|---|---|
+| `s` | seconds, fixed interval (interval unit) |
+| `m` | **minutes**, fixed interval (interval unit) |
+| `h` | hours, fixed interval (interval unit) |
+| `d` | calendar days (midnight-to-midnight) (calendar unit) |
+| `w` | calendar weeks (Monday 00:00 ISO 8601) (calendar unit) |
+| `t` | 30-day fixed terms (interval unit) |
+| `M` | **calendar months** (next 1st 00:00, leap-aware) (calendar unit) |
+| `y` | calendar years (next Jan 1 00:00) (calendar unit) |
 
-A verbose stats line looks like:
+Substitution gives total flexibility: "every calendar week" = `1w`, "every 7 days
+from start" = `7d`. "Every calendar month" = `1M`, "every 30 days from start" = `1t`.
+"Every calendar year" = `1y`, "every 365 days" = `365d`. Examples: `--log-interval 24h`
+(every 24 hours from anchor), `--log-interval 1d` (every calendar day at midnight),
+`--log-interval 36h` (every 36 hours from anchor — supported for inter-day cadences).
+Persisted to config so the service honors it.
 
-```
-stats: seen=48 (v2=48 v3=0 v4=0) resolve_fail=0 no_match=3 emitted=45 last_resolve_err=None
-```
+`--legal-retention <N><unit>` prunes whole aged-out archive bundles. Allowed units:
+`y` (calendar years), `M` (**calendar months — capital M, not m**), `t` (30-day
+terms), `w` (calendar weeks), `d` (calendar days). Sub-day units (`s`/`m`/`h`) are
+not allowed for retention (sub-day pruning is meaningless). So `25y`, `18M`, `90d`,
+`18t`, `26w` are all valid. Integer values only (use `18M`, not `1.5y`). Caps are
+generous (25 years for `M` and `y`, 10 years for `d`/`w`/`t`) to cover real-world
+long-horizon mandates like medical-records retention. **Blank/unset = keep
+everything forever (the default).** Pruning deletes only complete, fully-expired
+archive bundles — never trims or reopens a sealed (hashed) archive, so every
+surviving archive's integrity stays intact.
 
-`no_match` counts changes outside the whitelist (expected to be large — it is the
-whole-volume churn you are *not* capturing).
+> **Important change in v0.0.8:** retention uses `M` (capital) for calendar months,
+> NOT `m`. The lowercase `m` everywhere in usnmon means minutes. A pre-v0.0.8
+> `legal_retention: "18m"` config will fail-safe to keep-everything; migrate to
+> `18M` to restore intended behavior.
 
----
+> **Persistent rotation state (v0.0.8).** Three anchor fields drive the rotation
+> logic: `install_month` (when usnmon was first installed), `engine_start_anchor`
+> (every engine start), and `rotation_anchor` (every archive close). On restart the
+> engine detects four cases and acts: clean continuation, clock anomaly (emits 926),
+> size-cap mid-window (continues from persisted), or gap (emits 925; interval modes
+> also write a partial closing archive). See [`EVENT_ID.md`](EVENT_ID.md) for the
+> 925 and 926 event details.
 
-## Deploying to multiple machines
+The service start mode is set with pywin32's native `--startup <manual|auto|disabled|delayed>`
+flag at install (e.g. `python usnmon.py --startup delayed install`) — the standard way
+Python services are installed. usnmon reads the configured mode back from Windows after
+install and records it (shown by `check` and in each `Engine Started` (914) log entry).
+To change it, reinstall with a different `--startup` value. `delayed` (delayed-auto) is
+recommended for a forensic recorder: it self-starts after a reboot but after the boot
+storm.
 
-See **[DEPLOYMENT.md](DEPLOYMENT.md)** *(if provided)* for Group Policy / Active
-Directory and packaged-executable options. In brief:
+Archives land in `C:\FileSystem_Archives\` by default, each `.zip` containing the
+`.evtx` and its `.evtx.manifest`.
 
-1. **With Python on targets:** copy `usn_monitor.py` + `monitor_config.json` to
-   each host, then run the install/start commands (e.g. via a GPO startup script
-   or remote management tool).
-2. **Without Python on targets (recommended at scale):** freeze to a standalone
-   executable with PyInstaller and deploy that — no Python runtime required on
-   endpoints.
-3. Push a standard `monitor_config.json` to all hosts so they share one whitelist
-   and retention policy.
+> **Administrator rights are required** for journal access and for the rotation's
+> export/clear of the live channel.
 
----
+## Changing settings (`usnmon config`)
 
-## Notes & caveats
+`python usnmon.py config` opens an interactive, numbered editor for the user-changeable
+settings (archive directory, rotation interval, legal-retention term, service start
+type). It shows only those settings — never the engine's internal cursor state — and if
+the service is running it detects that and offers to stop it before editing (the engine
+writes cursor state continuously, so editing must happen while stopped), then offers to
+restart afterward. Do not hand-edit `usnmon.cfg`: it carries live runtime state and a
+hand-edit can break gap-free capture.
 
-- Requires elevation; under the default `LocalSystem` account this is automatic.
-- The `FileSystem` log and event source are auto-registered on first run.
-- On very high-I/O volumes with a broad whitelist, the live log grows quickly —
-  the 3.5 GB / 60 GB rolling policy is doing real work; tune it for your retention
-  needs.
-- Path resolution is cached by directory; rename/delete events bypass the cache to
-  avoid stale paths.
+## Requirements
 
----
+- Windows, Python 3, `pywin32`.
+- `cryptography` is imported by an inactive signing code path (see
+  [`SECURITY.md`](SECURITY.md) — signing is **not enabled**); it is not required for
+  capture, rotation, or hashing.
+- `python-evtx` is optional, for reading archives directly without Zimmerman tools.
 
-## License
+## Verifying an archive (manual)
 
-Found at **[LICENSE](LICENSE)**
+1. Unzip `FileSystem_<Month>_<Year>_<N>.zip` — you get the matching `.evtx` and its
+   `.evtx.manifest`.
+2. Hash the `.evtx` with any tool (e.g. HashMyFiles, `certutil -hashfile`,
+   `Get-FileHash`).
+3. Compare against the `sha256` (and others) in the manifest. A match confirms the
+   archive matches the hash recorded at rotation time.
+
+(See [`SECURITY.md`](SECURITY.md) for what this does and does not prove. A guided
+verification workflow is planned as part of a separate analysis tool.)
+
+## Parsing archives in Timeline Explorer
+
+Copy the [`maps/`](maps/) `*.map` files into EvtxECmd's `Maps` folder, then parse an
+archive (or a folder of them with `-d`) to CSV and open in Timeline Explorer. Full
+column-mapping details and the three event "shapes" are in
+[`maps/README_maps.md`](maps/README_maps.md).
+
+## Documentation
+
+- **[EVENT_ID.md](EVENT_ID.md)** — the full event-ID taxonomy (file, device,
+  operational, test). The Rosetta Stone for reading these logs and writing SIEM/EDR
+  queries.
+- **[SECURITY.md](SECURITY.md)** — scope, threat model, and honest limitations. What
+  usnmon guarantees and, importantly, what it does not. **Read before relying on it.**
+- **[maps/README_maps.md](maps/README_maps.md)** — EvtxECmd / Timeline Explorer / ELE /
+  Velociraptor integration.
+
+## Status
+
+v0.0.7 — builds on the locked v0.0.6 core (capture / rotation / hashing /
+device-tracking, demonstrated on real hardware) with: calendar-month rotation and
+month-bucketed naming, optional legal-retention pruning, configurable service start
+type, an interactive `config` editor, and a reordered resume path. EID 106 (V4
+range-change) is **reserved** (not emitted). Planned for later versions: external
+(customer-owned) archive signing for cryptographic authenticity, and a companion
+analysis tool for automated up-front archive-set verification.
